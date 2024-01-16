@@ -29,16 +29,24 @@ _**Step function graph:**_
 ![](media/Slide2.png)
 
  
-**_AWS Services used:_**
+**AWS Services used:**
 
 [AWS CloudFormation](https://aws.amazon.com/cloudformation/)
+
 [Amazon Simple Storage Service (S3)](https://aws.amazon.com/s3/)
+
 [Amazon S3 Glacier](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html)
+
 [AWS Step function](https://aws.amazon.com/step-functions/)
+
 [AWS Lambda](https://aws.amazon.com/lambda/)
+
 [AWS Glue](https://aws.amazon.com/glue/)
+
 [Amazon Athena](https://aws.amazon.com/athena/)
+
 [Amazon Simple Notification Service (SNS)](https://aws.amazon.com/sns/)
+
 [AWS Identity and Access Management (IAM)](https://aws.amazon.com/iam/)
  
 
@@ -57,26 +65,26 @@ The software is provided "as is", without warranty of any kind, express or impli
 
 ### Prerequisites
 
-** **** **
 The instructions in this post assume that you have required AWS Account [IAM permissions](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html) in addition to basic knowledge of [AWS Cloudformation](https://aws.amazon.com/cloudformation/). You also need to have the following resources:
  
 
 * An existing Amazon S3 Glacier Vault containing the Archives you want to delete.
 
-** **** **
 
 ### Summary of the steps
 
-** **** **
-
 * [Deploy](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/GettingStarted.Walkthrough.html) the AWS CloudFormation template 
+
 * Specify the Amazon S3 Glacier vault name, accept the deletion confirmation and optionally set the deletion speed. Please ensure there are no more archive upload operations to your Vault.
+
 * Check your email address and subscribe to the SNS topic to receive Job notifications
-* Monitor the job progress via email, once you receive confirmation that the archive deletion is complete, please wait for 24-48 hours, then check the S3 Glacier Management Console to confirm the Vault is empty.
+
+* Monitor the job progress via email, once you receive confirmation that the archive deletion is complete, please wait for 24-48 hours, 
+  then check the S3 Glacier Management Console to   confirm the Vault is empty.
+
 * Finally, you can then proceed to delete the S3 Glacier Vault.
 
-** **** **
-** **** **
+
 
 ### Deployment
 
@@ -84,28 +92,15 @@ The instructions in this post assume that you have required AWS Account [IAM per
 Listed below are the Cloudformation Stack parameters included in the template.
 ** **** **
 
-|
-**Name**	|
-**Description**	|
-|---	|---	|
-|
-Stack name	|
-Any valid alphanumeric characters and hyphen	|
-|
-Your Amazon S3 Glacier Vault Name	|
-Amazon S3 Glacier Vault containing the archives you no  longer need.	|
-|
-Confirmation that the Archives in your Glacier Vault  are eligible for Permanent deletion	|
-For S3 Glacier Vault with Vault lock enabled, please  note that archives are only eligible for deletion when the lock expires. You  also need to check and confirm there are no AWS IAM or resource policies  preventing the archives from being deleted.	|
-|
-I intend to delete all data in my Glacier Vault	|
-Drop down confirmation of your intent to empty your S3  Glacier Vault	|
-|
-Permanently delete all data in my Glacier Vault?	|
-You will need to type the ***Permanently Delete***  displayed in the parameter field for the second confirmation	|
-|
-The speed at which the solution deletes the Archives in  your S3 Glacier Vault	|
-Do you have other Vaults that you will need to access  during this deletion? This script is set to run as fast as possible to delete your Vault  Archives. If you actively use Vaults for other purposes, consider reducing  this number. [See Troubleshooting and Guidance Section below]	|
+
+|  Name                               | Description |
+|:--------------------------------- |:------------ |
+|  Stack name                         | Any valid alphanumeric characters and hyphen |
+|  Your Amazon S3 Glacier Vault Name  | Amazon S3 Glacier Vault containing the archives you no  longer need. |
+|  Confirmation that the Archives in your Glacier Vault  are eligible for Permanent deletion  | For S3 Glacier Vault with Vault lock enabled, please  note that archives are only eligible for deletion when the lock expires. You  also need to check and confirm there are no AWS IAM or resource policies  preventing the archives from being deleted. |
+|  I intend to delete all data in my Glacier Vault  | Drop down confirmation of your intent to empty your S3  Glacier Vault |
+|  Permanently delete all data in my Glacier Vault?  | You will need to type the ***Permanently Delete***  displayed in the parameter field for the second confirmation |            
+|  The speed at which the solution deletes the Archives in  your S3 Glacier Vault  | Do you have other Vaults that you will need to access  during this deletion? This script is set to run as fast as possible to delete your Vault  Archives. If you actively use Vaults for other purposes, consider reducing  this number. \[See Troubleshooting and Guidance Section below\] |                                
 
  
 _Steps to deploy:_
@@ -162,8 +157,7 @@ Please ensure the archives in your Vault are eligible for deletion, and there ar
 ## Limitations
 
  
-
-* The "Vault Inventory Splitting Component" relies on Amazon Athena SQL [UNLOAD](https://docs.aws.amazon.com/athena/latest/ug/unload.html) to perform the chunking, if your S3 Glacier Vault contains hundreds of millions of archives or more, some CSV output chunks might be [too large to process.](https://docs.aws.amazon.com/step-functions/latest/dg/input-output-itemreader.html#itemsource-example-csv-data) Please contact [AWS Support](https://aws.amazon.com/contact-us/)for assistance.
+* The "Vault Inventory Splitting Component" relies on Amazon Athena SQL [UNLOAD](https://docs.aws.amazon.com/athena/latest/ug/unload.html) to perform the chunking, if your S3 Glacier Vault contains hundreds of millions of archives or more, and are experiencing issues with deleting archives the solution, please contact [AWS Support](https://aws.amazon.com/contact-us/) for assistance.
 
 ## Costs
 
