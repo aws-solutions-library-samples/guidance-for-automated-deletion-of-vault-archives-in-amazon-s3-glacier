@@ -1,0 +1,2970 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Solution that empties an S3 Glacier Vault, by permanently deleting all it's Archives. Please ensure you deploy this ONLY if you need to Empty the Glacier Vault.
+  Deploying this solution is your acknoledgement that all archives in your Glacier Vault will be Permanently Deleted!
+Metadata:
+  License:
+    Description: >-
+      'MIT No Attribution
+
+      Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+      Permission is hereby granted, free of charge, to any person obtaining a copy of
+      this software and associated documentation files (the "Software"), to deal in
+      the Software without restriction, including without limitation the rights to
+      use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+      the Software, and to permit persons to whom the Software is furnished to do so.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+      IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+      FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+      COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+      IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+      CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.'
+
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+
+      -
+        Label:
+          default: "Amazon S3 Glacier Vault Details"
+        Parameters:
+          - GlacierVault
+
+      -
+        Label:
+          default: "Archive Deletion Confirmation"
+        Parameters:
+          - VaultArchiveDeletionEligibility
+          - VaultArchiveDeletionConfirmation1
+          - VaultArchiveDeletionConfirmation2
+
+      -
+        Label:
+          default: "Archive Deletion Speed"
+        Parameters:
+          - VaultDeletionSpeed
+          
+      -
+        Label:
+          default: "Job Notification and Tracking"
+        Parameters:
+          - RecipientEmail
+  
+          
+
+
+
+    ParameterLabels:
+      GlacierVault:
+        default: "Your Amazon S3 Glacier Vault Name"
+      VaultArchiveDeletionConfirmation1:
+        default: "I intend to delete all data in my Glacier Vault"
+      VaultArchiveDeletionConfirmation2:
+        default: "Permanently delete all data in my Glacier Vault?"
+      VaultArchiveDeletionEligibility:
+        default: "Confirmation that the Archives in your Glacier Vault are eligible for Permanent deletion"
+      VaultDeletionSpeed:
+        default: "The speed at which the solution deletes the Archives in your S3 Glacier Vault"                                
+      RecipientEmail:
+        default: "Email Address to Receive Deletion Progress Notifications"
+
+
+
+
+Parameters:
+  GlacierVault:
+    Type: String
+    Description: Please specify the S3 Glacier Vault you want to Delete all it's Archives
+
+  RecipientEmail:
+    Description: Please enter the Email address to receive Job notifications. Please remember to Confirm the Subsciption
+    Type: String
+    MinLength: '5'
+    MaxLength: '150'
+
+  VaultArchiveDeletionEligibility:
+    Type: String
+    Description: Please check and confirm there is no applied Vault Lock, Resource or IAM Deny Policy preventing Archives from being permanenctly deleted in the specified Vault
+    AllowedValues:
+      - "Yes"  
+
+  VaultArchiveDeletionConfirmation1:
+    Type: String
+    Description: Please confirm that you understand that you are permanently deleting your Glacier Archive and data.
+    AllowedValues:
+      - "Yes"
+
+  VaultArchiveDeletionConfirmation2:
+    Type: String
+    Description: To confirm deletion, type Permanently Delete in the text input field!
+    AllowedPattern: Permanently Delete
+
+  VaultDeletionSpeed:
+    Type: String
+    Description: Specify how fast the Vault archive deletion process is.
+    Default: 5
+    AllowedValues:
+         - 10
+         - 9
+         - 8
+         - 7
+         - 6
+         - 5
+         - 4
+         - 3
+         - 2
+         - 1     
+
+
+
+Mappings:
+  SDK:
+    SDKParameters:
+      maxattemptsall: 50
+      athenaquerymaxattempt: 5
+      archivedeletethreadpoolconcurrency: 5
+      archivedeletemaxpoolconnections: 150
+      inventorydownloadmaxconcurrency: 600
+      inventorydownloadmaxpoolconnections: 600
+      multipartthreshold: 5368709120
+      multipartchunksize: 67108864
+      objectstorageclass: STANDARD
+  Job:
+    Parameters:
+      vaultinventoryformat: CSV
+      vaultjobtype: inventory-retrieval
+  Bucket:
+    Parameters:
+      invdownloadprefix: 'glacier/inv/singlecsv/'
+      largeinvdownloadprefix: 'glacier/inv/splitcsv/'
+      chunkedcsvlocation: 'glacier/inv/chunkedcsv/'
+      athenaunloadpath: 'glacier/inv/chunkedcsv/unload/'
+      workingdirectory: 'glacier/inv/'
+      vaultjobtype: inventory-retrieval
+
+
+Resources:
+
+
+  StackNametoLower:
+    Type: Custom::NametoLower
+    Properties:
+      ServiceToken: !GetAtt NametoLower.Arn
+      stackname: !Ref AWS::StackName    
+
+
+  NametoLowerIAMRole:
+    DependsOn:
+      - CheckVaultExists  
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow       
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+
+  NametoLower:
+    DependsOn:
+      - CheckVaultExists  
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Description: Enforces Lower case for Stackname
+      MemorySize: 128
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt NametoLowerIAMRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import cfnresponse
+
+
+          def lambda_handler(event, context):
+              to_lower = event['ResourceProperties'].get('stackname', '').lower()
+              responseData = dict(change_to_lower=to_lower)
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+
+
+####################################### Empty Solution S3 Bucket #####################################
+
+  CleanupSolBucketCustomResource:
+    Type: Custom::EmptyS3Bucket
+    Properties:
+      ServiceToken: !GetAtt CleanupSolBucket.Arn
+      bucketname: !Ref VaultInventoryBucket    
+
+
+  CleanupSolBucketIAMRole:
+    DependsOn:
+      - CheckVaultExists  
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: '/'
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: DeleteObjectPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:Delete*'
+                  - 's3:List*'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}/*      
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}                
+
+
+  CleanupSolBucket:
+    DependsOn:
+      - CheckVaultExists  
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64
+      Description: Empties the Solution Amazon S3 Bucket
+      MemorySize: 256
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CleanupSolBucketIAMRole.Arn
+      Timeout: 900
+      Code:
+        ZipFile: |
+            import json
+            import cfnresponse
+            import logging
+            import os
+            import boto3
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])       
+
+            # Create Service Resource
+            s3 = boto3.resource('s3', region_name=my_region)   
+            
+            ### Empty Bucket Function ###
+
+            def empty_bucket(bucket):
+                try:
+                    s3Bucket = s3.Bucket(bucket)
+                    s3Bucket.object_versions.delete()
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info("Bucket Emptying Successful!")    
+
+
+            def lambda_handler(event, context):
+                logger.info(f'Event detail is: {event}')
+                bucket_name = event['ResourceProperties'].get('bucketname')
+
+                # Start Cloudformation Invocation #
+                if event.get('RequestType') == 'Delete':
+                  # logger.info(event)
+                  try:
+                    logger.info("Stack event is Delete, Emptying S3 Bucket...")
+                    empty_bucket(bucket_name)
+                    responseData = {}
+                    responseData['message'] = "Successful"
+                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                  except Exception as e:
+                    logger.error(e)
+                    responseData = {}
+                    responseData['message'] = str(e)
+                    failure_reason = str(e) 
+                    logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                    cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+                else:
+                  logger.info(f"Stack event is Create or Update, nothing to do....")
+                  responseData = {}
+                  responseData['message'] = "Completed"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)                 
+
+#############################################################################################################
+              
+
+  VaultInventoryBucket:
+    DependsOn:
+      - CheckVaultExists
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+     LifecycleConfiguration:
+      Rules:
+      - Id: delete-incomplete-mpu
+        Prefix: ''
+        AbortIncompleteMultipartUpload:
+          DaysAfterInitiation: 1
+        Status: Enabled
+      - Id: ExpirationRule
+        Status: Enabled
+        ExpirationInDays: 90
+        NoncurrentVersionExpiration:
+            NoncurrentDays: 93
+
+
+  AthenaWorkGroup:
+    DependsOn:
+      - CheckVaultExists  
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub 'myglacierinvathenawrkg-${StackNametoLower.change_to_lower}'
+      Description: Glacier Inventory Athena WorkGroup
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        ResultConfiguration:
+          OutputLocation: !Join ['', ['s3://', !Ref VaultInventoryBucket, '/', !FindInMap [ Bucket, Parameters, chunkedcsvlocation ] ]]
+
+
+  glueDatabase:
+    DependsOn:
+      - CheckVaultExists  
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        LocationUri: !Sub 's3://${VaultInventoryBucket}'
+        Name: !Sub 'myglacierinvdb-${StackNametoLower.change_to_lower}'
+
+  glueTable:
+    DependsOn:
+      - CheckVaultExists  
+    Type: 'AWS::Glue::Table'
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseName: !Ref glueDatabase
+      TableInput:
+        Name: !Sub 'myglacierinvtable-${StackNametoLower.change_to_lower}'
+        Parameters:
+          has_encrypted_data: false
+          skip.header.line.count: '1'
+        StorageDescriptor:
+          Columns:
+            - Name: archiveid
+              Type: string
+            - Name: archivedescription
+              Type: string
+            - Name: creationdate
+              Type: string
+            - Name: size
+              Type: string
+            - Name: sha256treehash
+              Type: string
+          Compressed: false
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          Location: !Join ['', ['s3://', !Ref VaultInventoryBucket, '/', !FindInMap [ Bucket, Parameters, largeinvdownloadprefix ] ]]
+          SerdeInfo:
+            Parameters:
+              escapeChar: \
+              quoteChar: '"'
+            SerializationLibrary: org.apache.hadoop.hive.serde2.OpenCSVSerde
+          StoredAsSubDirectories: false
+        TableType: EXTERNAL_TABLE
+
+
+
+  VaultTopic:
+    DependsOn:
+      - CheckVaultExists  
+    Type: AWS::SNS::Topic
+ 
+
+  VaultTopicEmail:
+    DependsOn:
+      - CheckVaultExists  
+    Type: AWS::SNS::Topic
+    Properties: 
+      KmsMasterKeyId: alias/aws/sns      
+
+
+
+  VaultTopicSubscription1:
+    DependsOn:
+      - CheckVaultExists  
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt SNStoStateMachineFunction.Arn
+      Protocol: lambda
+      TopicArn: !Ref VaultTopic
+
+
+  VaultTopicSubscription2:
+    DependsOn:
+      - CheckVaultExists  
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref RecipientEmail
+      Protocol: email
+      TopicArn: !Ref VaultTopicEmail
+
+
+  VaultTopicfunctionPermission:
+    DependsOn:
+      - CheckVaultExists  
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:invokeFunction
+      FunctionName:
+        Fn::GetAtt: SNStoStateMachineFunction.Arn
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref VaultTopic
+
+  ProcessInvStatesExecutionRole:
+    DependsOn:
+      - CheckVaultExists  
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: states.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: LambdaInvokeScopedAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - !GetAtt [DeleteArchiveLambdaFunction, Arn]
+                  - !GetAtt [StartStateFunc, Arn]
+                  - !GetAtt [SaveInventorytoS3Function, Arn]
+                  - !GetAtt [ChecknumrowsFunction, Arn]
+                  - !GetAtt [filterListFunction, Arn]
+                  - !GetAtt [ListPrefixFunction, Arn]
+                  - !GetAtt [AthenaSplitFunction, Arn]
+                  - !GetAtt [DeleteArchiveChunkedLambdaFunction, Arn]
+                  - !GetAtt [CheckAthenaQueryStatusFunction, Arn]
+        - PolicyName: StepFunctionsStartExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource: !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:empty-vault-${StackNametoLower.change_to_lower}'
+        - PolicyName: StepFunctionsManageExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:DescribeExecution'
+                  - 'states:StopExecution'
+                Resource: 
+                  - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:empty-vault-${StackNametoLower.change_to_lower}'
+                  - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:empty-vault-${StackNametoLower.change_to_lower}/*'
+        - PolicyName: S3PutObjectPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:ListMultipartUploadParts'
+                  - 's3:AbortMultipartUpload'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}/*
+        - PolicyName: SNSPublishPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                Resource:
+                  - !Ref VaultTopicEmail
+
+  ProcessInventoryState:
+    DependsOn:
+      - CheckVaultExists  
+    Type: 'AWS::StepFunctions::StateMachine'
+    Properties:
+      StateMachineName: !Sub 'empty-vault-${StackNametoLower.change_to_lower}'
+      DefinitionString: !Sub
+        - |-
+          {
+              "Comment": "Workflow to Empty A Glacier Vault",
+              "StartAt": "InitiateStateMachine",
+              "States": {
+                  "InitiateStateMachine": {
+                      "Type": "Task",
+                      "Resource": "${lambdainvoke}",
+                      "Parameters": {
+                          "Payload.$": "$",
+                          "FunctionName": "${Initiate}"
+                      },
+                      "Retry": [{
+                          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6,
+                          "BackoffRate": 2,
+                          "JitterStrategy": "FULL"
+                      }],
+                      "Next": "CheckInventoryDownloadComplete",
+                      "ResultPath": "$.download_result"
+                  },
+                  "CheckInventoryDownloadComplete": {
+                      "Type": "Choice",
+                      "Choices": [{
+                          "Variable": "$.download_result.Payload.download_complete",
+                          "BooleanEquals": true,
+                          "Next": "Checkcsvnumrows"
+                      }, {
+                          "Variable": "$.download_result.Payload.download_complete",
+                          "StringEquals": "StopExecution",
+                          "Next": "SNS Publish"
+                      }, {
+                          "Variable": "$.vault_inventory_size",
+                          "NumericGreaterThanEquals": 4900000000000,
+                          "Next": "Notify"
+                      }],
+                      "Default": "DownloadVaultInventorytoBucket"
+                  },
+                  "Checkcsvnumrows": {
+                      "Type": "Task",
+                      "Resource": "${lambdainvoke}",
+                      "Parameters": {
+                          "Payload.$": "$",
+                          "FunctionName": "${Checknumrows}"
+                      },
+                      "Retry": [{
+                          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6,
+                          "BackoffRate": 2,
+                          "JitterStrategy": "FULL"
+                      }],
+                      "Next": "CheckCSVManifestSplitCompleted",
+                      "ResultPath": "$.download_result"
+                  },
+                  "CheckCSVManifestSplitCompleted": {
+                      "Type": "Choice",
+                      "Choices": [{
+                          "And": [{
+                              "Variable": "$.download_result.Payload.csv_chunking_complete",
+                              "BooleanEquals": true
+                          }, {
+                              "Variable": "$.download_result.Payload.my_csv_num_rows",
+                              "NumericGreaterThan": 0
+                          }],
+                          "Next": "Pass"
+                      }, {
+                          "And": [{
+                              "Variable": "$.download_result.Payload.split_csv",
+                              "StringEquals": "NoSplit"
+                          }, {
+                              "Variable": "$.download_result.Payload.my_csv_num_rows",
+                              "NumericGreaterThan": 0
+                          }],
+                          "Next": "CSVProcessor"
+                      }, {
+                          "Variable": "$.download_result.Payload.my_csv_num_rows",
+                          "NumericEquals": 0,
+                          "Next": "NotifySuccess",
+                          "Comment": "Success if Vault is Already Empty"
+                      }, {
+                        "Variable": "$.download_result.Payload.query_max_retry",
+                        "NumericEqualsPath": "$.download_result.Payload.query_num_attempts",
+                        "Next": "Notify"
+                      }        
+                      ],
+                      "Default": "empty-glacier-vault-3-AthenaSplit"
+                  },
+                  "Pass": {
+                      "Type": "Pass",
+                      "Next": "ListPrefix",
+                      "Result": {
+                          "bucketname": "${ResultBucket}",
+                          "prefix": "${chunkedcsvprefix}"
+                      }
+                  },
+                  "ListPrefix": {
+                      "Type": "Task",
+                      "Resource": "${lambdainvoke}",
+                      "Parameters": {
+                          "Payload.$": "$",
+                          "FunctionName": "${ListPrefix}"
+                      },
+                      "Retry": [{
+                          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6,
+                          "BackoffRate": 2,
+                          "JitterStrategy": "FULL"
+                      }],
+                      "Next": "CheckProcessedItems",
+                      "ResultPath": "$.data"
+                  },
+                  "CheckProcessedItems": {
+                      "Type": "Choice",
+                      "Choices": [{
+                          "Variable": "$.data.Payload.item_loop_status",
+                          "StringEquals": "complete",
+                          "Next": "NotifySuccess"
+                      }, {
+                          "Variable": "$.data.Payload.item_count",
+                          "NumericLessThan": 1,
+                          "Next": "Notify"
+                      }],
+                      "Default": "FilterList"
+                  },
+                  "Notify": {
+                      "Type": "Task",
+                      "Resource": "${notifyviaemail}",
+                      "Parameters": {
+                          "TopicArn": "${EmailSNS}",
+                          "Message": {
+                              "Status": "No Action Needed",
+                              "Message": "Vault Inventory has no content or too Large or Athena Unload Inventory Split Failed!"
+                          }
+                      },
+                      "Next": "Success"
+                  },
+                  "FilterList": {
+                      "Type": "Task",
+                      "Resource": "${lambdainvoke}",
+                      "Parameters": {
+                          "Payload.$": "$",
+                          "FunctionName": "${FilterList}"
+                      },
+                      "Retry": [{
+                          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6,
+                          "BackoffRate": 2,
+                          "JitterStrategy": "FULL"
+                      }],
+                      "Next": "CSVProcessor-Chunks",
+                      "InputPath": "$.data.Payload",
+                      "ResultPath": "$.data"
+                  },
+                  "Success": {
+                      "Type": "Succeed"
+                  },
+                  "CSVProcessor-Chunks": {
+                      "Type": "Map",
+                      "ItemProcessor": {
+                          "ProcessorConfig": {
+                              "Mode": "DISTRIBUTED",
+                              "ExecutionType": "STANDARD"
+                          },
+                          "StartAt": "DeleteArchivesforChunks",
+                          "States": {
+                              "DeleteArchivesforChunks": {
+                                  "Type": "Task",
+                                  "Resource": "${lambdainvoke}",
+                                  "OutputPath": "$.Payload",
+                                  "Parameters": {
+                                      "Payload.$": "$",
+                                      "FunctionName": "${DeleteArchiveForChunks}"
+                                  },
+                                  "Retry": [{
+                                      "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+                                      "IntervalSeconds": 2,
+                                      "MaxAttempts": 6,
+                                      "BackoffRate": 2
+                                  }],
+                                  "End": true
+                              }
+                          }
+                      },
+                      "ItemReader": {
+                          "Resource": "${s3getobjectapi}",
+                          "ReaderConfig": {
+                              "InputType": "CSV",
+                              "CSVHeaderLocation": "GIVEN",
+                              "CSVHeaders": [
+                              "archiveid",
+                              "archivedescription",
+                              "creationdate",
+                              "size",
+                              "sha256treehash"
+                              ]                              
+                          },
+                          "Parameters": {
+                              "Bucket.$": "$.bucketname",
+                              "Key.$": "$.keyname"
+                          }
+                      },
+                      "MaxConcurrency": 10,
+                      "Label": "FileAnalysis",
+                      "ItemBatcher": {
+                          "MaxItemsPerBatch": 100
+                      },
+                      "Next": "CheckProcessedItems",
+                      "InputPath": "$.data.Payload",
+                      "ResultPath": "$.csvprocessor",
+                      "ToleratedFailurePercentage": 50,
+                      "ResultWriter": {
+                          "Resource": "arn:aws:states:::s3:putObject",
+                          "Parameters": {
+                              "Bucket": "${ResultBucket}",
+                              "Prefix": "state_function_reports"
+                          }
+                      },
+                      "Retry": [{
+                          "ErrorEquals": ["States.TaskFailed"],
+                          "BackoffRate": 2,
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6
+                      }]
+                  },
+                  "empty-glacier-vault-3-AthenaSplit": {
+                      "Type": "Task",
+                      "Resource": "${lambdainvoke}",
+                      "Parameters": {
+                          "Payload.$": "$",
+                          "FunctionName": "${AthenaSplit}"
+                      },
+                      "Retry": [{
+                          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6,
+                          "BackoffRate": 2,
+                          "JitterStrategy": "FULL"
+                      }],
+                      "Next": "WaitForQuery",
+                      "ResultPath": "$.download_result"
+                  },
+                  "WaitForQuery": {
+                      "Type": "Wait",
+                      "Seconds": 900,
+                      "Next": "CheckQueryStatus"
+                  },
+                  "CheckQueryStatus": {
+                      "Type": "Task",
+                      "Resource": "${lambdainvoke}",
+                      "Parameters": {
+                        "Payload.$": "$",
+                        "FunctionName": "${CheckAthenaQueryStatus}"
+                      },
+                      "Retry": [
+                        {
+                          "ErrorEquals": [
+                            "Lambda.ServiceException",
+                            "Lambda.AWSLambdaException",
+                            "Lambda.SdkClientException",
+                            "Lambda.TooManyRequestsException",
+                            "States.TaskFailed"
+                          ],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6,
+                          "BackoffRate": 2,
+                          "JitterStrategy": "FULL"
+                        }
+                      ],
+                      "Next": "CheckCSVManifestSplitCompleted",
+                      "ResultPath": "$.download_result"
+                  },        
+                  "DownloadVaultInventorytoBucket": {
+                      "Type": "Task",
+                      "Resource": "${lambdainvoke}",
+                      "Parameters": {
+                          "Payload.$": "$",
+                          "FunctionName": "${InvtoS3}"
+                      },
+                      "Retry": [{
+                          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6,
+                          "BackoffRate": 2
+                      }],
+                      "Next": "CheckInventoryDownloadComplete",
+                      "ResultPath": "$.download_result"
+                  },
+                  "CSVProcessor": {
+                      "Type": "Map",
+                      "ItemProcessor": {
+                          "ProcessorConfig": {
+                              "Mode": "DISTRIBUTED",
+                              "ExecutionType": "STANDARD"
+                          },
+                          "StartAt": "DeleteArchives",
+                          "States": {
+                              "DeleteArchives": {
+                                  "Type": "Task",
+                                  "Resource": "${lambdainvoke}",
+                                  "OutputPath": "$.Payload",
+                                  "Parameters": {
+                                      "Payload.$": "$",
+                                      "FunctionName": "${DeleteArchiveFunctionArn}"
+                                  },
+                                  "Retry": [{
+                                      "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+                                      "IntervalSeconds": 2,
+                                      "MaxAttempts": 6,
+                                      "BackoffRate": 2
+                                  }],
+                                  "End": true
+                              }
+                          }
+                      },
+                      "ItemReader": {
+                          "Resource": "${s3getobjectapi}",
+                          "ReaderConfig": {
+                              "InputType": "CSV",
+                              "CSVHeaderLocation": "FIRST_ROW"
+                          },
+                          "Parameters": {
+                              "Bucket.$": "$.download_result.Payload.s3Bucket",
+                              "Key.$": "$.download_result.Payload.s3Key"
+                          }
+                      },
+                      "MaxConcurrency": 10,
+                      "Label": "CSVProcessor",
+                      "ItemBatcher": {
+                          "MaxItemsPerBatch": 100
+                      },
+                      "ToleratedFailurePercentage": 50,
+                      "ResultWriter": {
+                          "Resource": "arn:aws:states:::s3:putObject",
+                          "Parameters": {
+                              "Bucket": "${ResultBucket}",
+                              "Prefix": "state_function_reports"
+                          }
+                      },
+                      "Next": "NotifySuccess",
+                      "Retry": [{
+                          "ErrorEquals": ["States.TaskFailed"],
+                          "BackoffRate": 2,
+                          "IntervalSeconds": 2,
+                          "MaxAttempts": 6
+                      }]
+                  },
+                  "NotifySuccess": {
+                      "Type": "Task",
+                      "Resource": "${notifyviaemail}",
+                      "Parameters": {
+                          "TopicArn": "${EmailSNS}",
+                          "Message": {
+                              "Status": "Execution Successful",
+                              "Message": "Glacier Vault Successfully Emptied! Please wait for at least 24 hours for the Vault Inventory to be updated, before initiating Vault deletion"
+                          }
+                      },
+                      "Next": "Success"
+                  },
+                  "SNS Publish": {
+                      "Type": "Task",
+                      "Resource": "${notifyviaemail}",
+                      "Parameters": {
+                          "TopicArn": "${EmailSNS}",
+                          "Message": {
+                              "Status": "Execution Cancelled",
+                              "Message": "Too many Vault Inventory download Attempts failed"
+                          }
+                      },
+                      "End": true
+                  }
+              }
+          }
+        - { s3getobjectapi: !Sub "arn:${AWS::Partition}:states:::s3:getObject", notifyviaemail: !Sub "arn:${AWS::Partition}:states:::sns:publish", lambdainvoke: !Sub "arn:${AWS::Partition}:states:::lambda:invoke", DeleteArchiveFunctionArn: !Ref DeleteArchiveLambdaFunction, ResultBucket: !Ref VaultInventoryBucket, EmailSNS: !Ref VaultTopicEmail, InvtoS3: !Ref SaveInventorytoS3Function, Initiate: !Ref StartStateFunc, chunkedcsvprefix: !FindInMap [ Bucket, Parameters, athenaunloadpath ], Checknumrows: !Ref ChecknumrowsFunction, ListPrefix: !Ref ListPrefixFunction, FilterList: !Ref filterListFunction, AthenaSplit: !Ref AthenaSplitFunction, DeleteArchiveForChunks: !Ref DeleteArchiveChunkedLambdaFunction, CheckAthenaQueryStatus: !Ref CheckAthenaQueryStatusFunction }
+      RoleArn: !GetAtt [ProcessInvStatesExecutionRole, Arn]
+
+
+##################################### Check Vault Exists Function #############################################
+
+  CheckVaultExists:
+    Type: 'Custom::LambdaTrigger'
+    Properties:
+      ServiceToken: !GetAtt CheckVaultExistsLambdaFunction.Arn
+      glaciervaultname: !Ref GlacierVault
+
+
+  CheckVaultExistsIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'glacier:DescribeVault'
+                Resource: !Sub 'arn:${AWS::Partition}:glacier:${AWS::Region}:${AWS::AccountId}:vaults/${GlacierVault}'
+
+
+  CheckVaultExistsLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64    
+      Handler: index.lambda_handler
+      Role: !GetAtt CheckVaultExistsIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          glacier_vault_name: !Ref GlacierVault
+      Code:
+        ZipFile: |
+            import json
+            import cfnresponse
+            import logging
+            import os
+            import boto3
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+
+
+            # Set SDK paramters
+            config = Config(retries = {'max_attempts': 5})
+
+
+            # Set variables
+            my_accountId = '-'
+
+
+            # Set Service Parameters
+            glacier_client = boto3.client('glacier', config=config, region_name=my_region)
+
+
+            ### Check If Vault Exists first before deploying other resources ##
+
+            def check_vault_exists(vault_name):
+                logger.info(f"Checking if Vault Exists")
+                try:
+                    get_response = glacier_client.describe_vault(
+                        vaultName=vault_name
+                    )                    
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f"Vault does exist, deploying other resources in a moment ...")
+                    return get_response
+
+
+            def lambda_handler(event, context):
+              # Define Environmental Variables
+              my_glacier_vault_name = event.get('ResourceProperties').get('glaciervaultname')
+
+              logger.info(f'Event detail is: {event}')
+
+              if event.get('RequestType') == 'Create' or event.get('RequestType') == 'Update':
+                # logger.info(event)
+                try:
+                  logger.info("Stack event is Create, checking if Amazon S3 Glacier Vault Exists...")
+                  check_vault_exists(my_glacier_vault_name)
+                  responseData = {}
+                  responseData['message'] = "Successful"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = str(e) 
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+
+              elif event.get('RequestType') == 'Delete':
+                logger.info(event)
+                try:
+                  logger.info(f"Stack event is Delete or Update, nothing to do....")
+                  responseData = {}
+                  responseData['message'] = "Completed"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = str(e) 
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)                  
+
+
+################################################ Code Ends ####################################################
+
+
+
+
+
+###################################################### Enable Vault Inventory Function ############################
+  LambdaTrigger:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'Custom::LambdaTrigger'
+    Properties:
+      ServiceToken: !GetAtt EnableInventoryLambdaFunction.Arn
+      glaciervaultname: !Ref GlacierVault
+
+
+  EnableInventoryIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'glacier:InitiateJob'
+                  - 'glacier:SetVaultNotifications'
+                  - 'glacier:GetVaultNotifications'
+                  - 'glacier:DeleteVaultNotifications'
+                Resource: !Sub 'arn:${AWS::Partition}:glacier:${AWS::Region}:${AWS::AccountId}:vaults/${GlacierVault}'
+        - PolicyName: SNSPublishPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                Resource:
+                  - !Ref VaultTopicEmail
+
+
+  EnableInventoryLambdaFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt EnableInventoryIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 180
+      MemorySize: 256
+      Environment:
+        Variables:
+          glacier_vault_name: !Ref GlacierVault
+          sns_topic: !Ref VaultTopic
+          inventory_format: !FindInMap
+              - Job
+              - Parameters
+              - vaultinventoryformat
+          max_attempts: !FindInMap
+              - SDK
+              - SDKParameters
+              - maxattemptsall
+          job_type: !FindInMap
+              - Job
+              - Parameters
+              - vaultjobtype
+      Code:
+        ZipFile: |
+            import json
+            import cfnresponse
+            import logging
+            import os
+            import boto3
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+            my_max_attempts = int(os.environ['max_attempts'])
+            my_sns_topic = str(os.environ['sns_topic'])
+            my_inventory_format = str(os.environ['inventory_format'])
+            my_job_type = str(os.environ['job_type'])
+
+
+            # Set SDK paramters
+            config = Config(retries = {'max_attempts': my_max_attempts})
+
+
+            # Set variables
+            my_accountId = '-'
+
+
+            # Set Service Parameters
+            glacier_client = boto3.client('glacier', config=config, region_name=my_region)
+
+
+            def delete_vault_notification(vault_name):
+                logger.info(f"Initiating delete of Vault notification configuration for vault {vault_name}")
+                try:
+                    del_response = glacier_client.delete_vault_notifications(
+                        vaultName=vault_name
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                else:
+                    logger.info(f"Vault notification configuration for vault {vault_name} successfully deleted")
+
+
+            def set_vault_notification(vault_name, sns_topic):
+                logger.info(f"attempting to set Vault Notification Configuration")
+                logger.info(f"Vault name is: {vault_name}")
+                logger.info(f"SNS Topic is: {sns_topic}")
+                try:
+                    set_notification = glacier_client.set_vault_notifications(
+                        vaultName=vault_name,
+                        vaultNotificationConfig={
+                            'SNSTopic': sns_topic,
+                            'Events': [
+                                'InventoryRetrievalCompleted',
+                            ]
+                        }
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f"Successfully set Vault Notification Configuration!")
+                    return set_notification
+
+
+
+            """ Initiate Inventory Retrieval Job"""
+
+
+            def initiate_inventory_retrieval(inv_format, sns_topic, job_type, account_id, vault_name):
+                logger.info(f'Starting the process of requesting for Archive Inventory from Glacier Vault: {vault_name}')
+                try:
+                    response = glacier_client.initiate_job(
+                        accountId=account_id,
+                        jobParameters={
+                            'Description': 'My inventory job',
+                            'Format': inv_format,
+                            'SNSTopic': sns_topic,
+                            'Type': job_type,
+                        },
+                        vaultName=vault_name,
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f'Archive Inventory from Glacier Vault: {vault_name} successfully requested')
+                    return response
+
+            def lambda_handler(event, context):
+              # Define Environmental Variables
+              my_glacier_vault_name = event.get('ResourceProperties').get('glaciervaultname')
+
+              logger.info(f'Event detail is: {event}')
+
+              if event.get('RequestType') == 'Create':
+                # logger.info(event)
+                try:
+                  logger.info("Stack event is Create, initiating inventory function...")
+                  set_vault_notification(my_glacier_vault_name, my_sns_topic)
+                  initiate_inventory_retrieval(my_inventory_format, my_sns_topic, my_job_type, my_accountId, my_glacier_vault_name)
+                  responseData = {}
+                  responseData['message'] = "Successful"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = "Failure reason is: " + str(e) 
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+              elif event.get('RequestType') == 'Delete':
+                logger.info(event)
+                try:
+                  logger.info(f"Stack event is Delete, deleting Vault Notification Configuration.....")
+                  delete_vault_notification(my_glacier_vault_name)
+                  responseData = {}
+                  responseData['message'] = "Completed"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = "Failure reason is: " + str(e) 
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+
+              elif event.get('RequestType') == 'Update':
+                logger.info(event)
+                try:
+                  logger.info("Stack event is Update, initiating inventory function...")
+                  set_vault_notification(my_glacier_vault_name, my_sns_topic)
+                  initiate_inventory_retrieval(my_inventory_format, my_sns_topic, my_job_type, my_accountId, my_glacier_vault_name)
+                  responseData = {}
+                  responseData['message'] = "Successful"
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                except Exception as e:
+                  logger.error(e)
+                  responseData = {}
+                  responseData['message'] = str(e)
+                  failure_reason = "Failure reason is: " + str(e) 
+                  logger.info(f"Sending Invocation Response {responseData['message']} to Cloudformation Service")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData, reason=failure_reason)
+              else:
+                logging.error(f"Unsupported Operation {event.get('RequestType')}, please retry")
+
+
+
+################################################ Code Ends ####################################################
+
+
+
+  DeleteArchiveIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'glacier:DeleteArchive'
+                Resource: !Sub 'arn:${AWS::Partition}:glacier:${AWS::Region}:${AWS::AccountId}:vaults/${GlacierVault}'
+
+
+  DeleteArchiveLambdaFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt DeleteArchiveIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 900
+      MemorySize: 512
+      Environment:
+        Variables:
+          glacier_vault_name: !Ref GlacierVault
+          max_concurrency: !Ref VaultDeletionSpeed
+          max_attempts: !FindInMap
+              - SDK
+              - SDKParameters
+              - maxattemptsall
+          max_pool_connections: !FindInMap
+              - SDK
+              - SDKParameters
+              - archivedeletemaxpoolconnections
+      Code:
+        ZipFile: |
+            import json
+            import logging
+            import os
+            import boto3
+            import jmespath
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+            import concurrent.futures
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+            # Setup Logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+            my_glacier_vault_name = str(os.environ['glacier_vault_name'])
+            my_max_concurrency = int(os.environ['max_concurrency'])
+            my_max_attempts = int(os.environ['max_attempts'])
+            my_max_pool_connections = int(os.environ['max_pool_connections'])
+
+
+            # Set SDK paramters
+            config = Config(max_pool_connections=my_max_pool_connections, retries = {'max_attempts': my_max_attempts})
+
+
+            # Set variables
+            AccountId = '-'
+
+            # Set Service Parameters
+            client = boto3.client('glacier', config=config, region_name=my_region)
+
+
+            """ Initiate Archive Deletion Function"""
+
+
+            def delete_archive(archive_id):
+                logger.info(f'Initiating deletion of archives: {archive_id} from vault: {my_glacier_vault_name}')
+                try:
+                    del_response = client.delete_archive(
+                        accountId=AccountId,
+                        archiveId=archive_id,
+                        vaultName=my_glacier_vault_name,
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f'Successfully deleted archive: {archive_id} from vault: {my_glacier_vault_name}')
+                    logger.info(f'Archive delete response: {del_response}')
+                    return del_response
+
+
+            def lambda_handler(event, context):
+                logger.info(event)
+                """ Use Jmespath to process the Event data and access only the ArchiveID"""
+                try:
+                    result_query = jmespath.compile('Items[].ArchiveId')
+                    archive_id_list = result_query.search(event)
+                    logger.info(f'ArchiveID List: {archive_id_list}')
+                    """ Submitting Archive deletion to Threads to improve performance"""
+                    logger.info(f'Submitting List of Archives from Event to ThreadPool Executor with {my_max_concurrency} thread')
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=my_max_concurrency) as executor:
+                        executor.map(delete_archive, archive_id_list)
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f'Successfully submitted Request to ThreadPool Executor')
+                    return {
+                        'statusCode': 200,
+                        'body': json.dumps('Successfully processed the Batch!')
+                    }
+
+
+
+################################################ Code Ends ####################################################
+
+
+  DeleteArchiveChunkedIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'glacier:DeleteArchive'
+                Resource: !Sub 'arn:${AWS::Partition}:glacier:${AWS::Region}:${AWS::AccountId}:vaults/${GlacierVault}'
+
+
+  DeleteArchiveChunkedLambdaFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt DeleteArchiveChunkedIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 900
+      MemorySize: 512
+      Environment:
+        Variables:
+          glacier_vault_name: !Ref GlacierVault
+          max_concurrency: !Ref VaultDeletionSpeed
+          max_attempts: !FindInMap
+              - SDK
+              - SDKParameters
+              - maxattemptsall
+          max_pool_connections: !FindInMap
+              - SDK
+              - SDKParameters
+              - archivedeletemaxpoolconnections
+      Code:
+        ZipFile: |
+            import json
+            import logging
+            import os
+            import boto3
+            import jmespath
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+            import concurrent.futures
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+            # Setup Logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+            my_glacier_vault_name = str(os.environ['glacier_vault_name'])
+            my_max_concurrency = int(os.environ['max_concurrency'])
+            my_max_attempts = int(os.environ['max_attempts'])
+            my_max_pool_connections = int(os.environ['max_pool_connections'])
+
+
+            # Set SDK paramters
+            config = Config(max_pool_connections=my_max_pool_connections, retries = {'max_attempts': my_max_attempts})
+
+
+            # Set variables
+            AccountId = '-'
+
+            # Set Service Parameters
+            client = boto3.client('glacier', config=config, region_name=my_region)
+
+
+            """ Initiate Archive Deletion Function"""
+
+
+            def delete_archive(archive_id):
+                logger.info(f'Initiating deletion of archives: {archive_id} from vault: {my_glacier_vault_name}')
+                try:
+                    del_response = client.delete_archive(
+                        accountId=AccountId,
+                        archiveId=archive_id,
+                        vaultName=my_glacier_vault_name,
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f'Successfully deleted archive: {archive_id} from vault: {my_glacier_vault_name}')
+                    logger.info(f'Archive delete response: {del_response}')
+                    return del_response
+
+
+            def lambda_handler(event, context):
+                logger.info(event)
+                """ Use Jmespath to process the Event data and access only the ArchiveID"""
+                try:
+                    result_query = jmespath.compile('Items[].archiveid')
+                    archive_id_list = result_query.search(event)
+                    logger.info(f'ArchiveID List: {archive_id_list}')
+                    """ Submitting Archive deletion to Threads to improve performance"""
+                    logger.info(f'Submitting List of Archives from Event to ThreadPool Executor with {my_max_concurrency} thread')
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=my_max_concurrency) as executor:
+                        executor.map(delete_archive, archive_id_list)
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f'Successfully submitted Request to ThreadPool Executor')
+                    return {
+                        'statusCode': 200,
+                        'body': json.dumps('Successfully processed the Batch!')
+                    }
+
+
+################################################ Code Ends ####################################################
+
+  SNStoStateMachineFunctionIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource: !GetAtt ProcessInventoryState.Arn
+
+
+  SNStoStateMachineFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt SNStoStateMachineFunctionIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 180
+      MemorySize: 128
+      Environment:
+        Variables:
+          step_function_arn: !GetAtt ProcessInventoryState.Arn
+          max_attempts: !FindInMap
+              - SDK
+              - SDKParameters
+              - maxattemptsall
+      Code:
+        ZipFile: |
+            import json
+            import boto3
+            import uuid
+            import os
+            import logging
+            import json
+            from botocore.exceptions import ClientError
+            from botocore.client import Config
+
+            # Enable debugging for troubleshooting
+            # boto3.set_stream_logger("")
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Define Environmental Variables
+            my_state_machine_arn = str(os.environ['step_function_arn'])
+            my_max_attempts = int(os.environ['max_attempts'])
+            my_region = str(os.environ['AWS_REGION'])
+
+            # Set SDK paramters
+            config = Config(retries = {'max_attempts': my_max_attempts})
+
+            # Setup Service Client
+            client = boto3.client('stepfunctions', config=config, region_name=my_region)
+
+
+            def invoke_state_machine(state_machine_arn, inv_input, invocation_name):
+                try:
+                    response = client.start_execution(
+                        stateMachineArn=state_machine_arn,
+                        name=invocation_name,
+                        input=inv_input,
+                        # traceHeader='string'
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                except Exception as e:
+                    logger.error(e)
+                else:
+                    logger.info(f"Invocation Successful")
+
+
+
+            def lambda_handler(event, context):
+                raw_sns_message = event.get('Records')[0].get('Sns').get('Message')
+
+                # Convert Message String to Dict
+                vault_message = json.loads(raw_sns_message)
+                logger.info(vault_message)
+
+                inventory_size = vault_message.get("InventorySizeInBytes")
+                logger.info(inventory_size)
+                job_id = vault_message.get("JobId")
+                logger.info(job_id)
+                glacier_vault_name = vault_message.get("VaultARN").split(':')[-1].split('/')[-1]
+                logger.info(glacier_vault_name)
+
+                # # Create Dict Input for the State machine invocation
+
+                state_machine_dict_input = {
+                                        'vault_name': glacier_vault_name,
+                                        'inv_job_id': job_id,
+                                        'vault_inventory_size': inventory_size,
+                                        }
+
+
+                # Convert to JSON String
+                state_machine_input = json.dumps(state_machine_dict_input)
+                logger.info(state_machine_input)
+
+                my_invocation_name = str(uuid.uuid4())
+
+                # Call State Machine
+
+                invoke_state_machine(my_state_machine_arn, state_machine_input, my_invocation_name)
+
+                # TODO implement
+                return {
+                    'statusCode': 200,
+                    'body': json.dumps('State machine successfully invoked!')
+                }
+
+
+
+################################################ Code Ends ####################################################
+
+
+
+
+  SaveInventorytoS3FunctionIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'glacier:DescribeJob'
+                  - 'glacier:GetJobOutput'
+                Resource: !Sub 'arn:${AWS::Partition}:glacier:${AWS::Region}:${AWS::AccountId}:vaults/${GlacierVault}'
+        - PolicyName: S3PutObjectPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:ListMultipartUploadParts'
+                  - 's3:AbortMultipartUpload'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}/*
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}
+        - PolicyName: DeleteObjectPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:Delete*'
+                  - 's3:List*'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}/*      
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}                        
+
+
+  SaveInventorytoS3Function:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt SaveInventorytoS3FunctionIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 900
+      MemorySize: 512
+      Environment:
+        Variables:
+          glacier_vault_name: !Ref GlacierVault
+          s3BuckettoDownload: !Ref VaultInventoryBucket
+          copy_storage_class: !FindInMap
+              - SDK
+              - SDKParameters
+              - objectstorageclass
+          multipart_chunksize: !FindInMap
+              - SDK
+              - SDKParameters
+              - multipartchunksize
+          s3BuckettoDownloadPrefix: !FindInMap
+              - Bucket
+              - Parameters
+              - invdownloadprefix
+          max_attempts: !FindInMap
+              - SDK
+              - SDKParameters
+              - maxattemptsall
+          max_concurrency: !FindInMap
+              - SDK
+              - SDKParameters
+              - inventorydownloadmaxconcurrency
+          max_pool_connections: !FindInMap
+              - SDK
+              - SDKParameters
+              - inventorydownloadmaxpoolconnections
+      Code:
+        ZipFile: |
+            import boto3
+            import json
+            import logging
+            import uuid
+            import io
+            import os
+            from botocore.client import Config
+            from botocore.exceptions import ClientError
+            from boto3.s3.transfer import TransferConfig
+
+            # Enable Debug logging
+            # boto3.set_stream_logger('')
+
+            # Setup Logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Set variables
+            AccountId = '-'
+
+
+            # Define Environmental Variables
+            my_glacier_vault_name = str(os.environ['glacier_vault_name'])
+            my_bucket = str(os.environ['s3BuckettoDownload'])
+            my_max_pool_connections = int(os.environ['max_pool_connections'])
+            my_max_concurrency = int(os.environ['max_concurrency'])
+            my_multipart_chunksize = int(os.environ['multipart_chunksize'])
+            my_max_attempts = int(os.environ['max_attempts'])
+            obj_copy_storage_class = str(os.environ['copy_storage_class'])
+            inv_download_prefix = str(os.environ['s3BuckettoDownloadPrefix'])
+            my_region = str(os.environ['AWS_REGION'])
+
+
+
+            # Set and Declare Configuration Parameters
+            upload_transfer_config = TransferConfig(max_concurrency=my_max_concurrency,
+                                                    multipart_chunksize=my_multipart_chunksize,
+                                                    )
+            config = Config(max_pool_connections=my_max_pool_connections, retries={'max_attempts': my_max_attempts})
+
+            # Set and Declare Copy Arguments
+            my_upload_args = {'ACL': 'bucket-owner-full-control', 'StorageClass': obj_copy_storage_class}
+
+            # Set Service Clients
+            client = boto3.client('glacier', region_name=my_region)
+            s3 = boto3.resource('s3', config=config, region_name=my_region)
+            s3Client = boto3.client('s3', region_name=my_region)
+
+            """ Define Multipart Upload Parts"""
+            # parts = []
+
+
+            """ Initiate Inventory Retrieval Download Job"""
+
+
+            def stream_to_s3(bucket, key, inv_stream):
+                # logger.info(bucket, key)
+                logger.info(f'Starting the streaming of Vault Inventory to the S3 Bucket: s3://{bucket}/{key}')
+
+                try:
+                    upload_to_s3 = s3.Object(bucket, key).upload_fileobj(inv_stream,
+                                                                         Config=upload_transfer_config,
+                                                                         ExtraArgs=my_upload_args,
+                                                                         )
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f'Object successfully uploaded to s3://{bucket}/{key}')
+
+
+            def retrieve_inv_to_s3(job_id, vault_name):
+                try:
+                    response_body = client.get_job_output(
+                        vaultName=vault_name,
+                        jobId=job_id,
+                    ).get('body')
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    return response_body
+
+
+            def retrieve_ranged_inv_to_s3(job_id, vault_name, inv_range):
+                try:
+                    response_body = client.get_job_output(
+                        vaultName=vault_name,
+                        jobId=job_id,
+                        range=inv_range,
+                    ).get('body')
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    return response_body
+
+
+            def upload_part_to_s3(bucket, key, uploadid, part_number, chunk):
+                # Upload each chunk to S3
+                try:
+                    part = s3Client.upload_part(
+                        Body=chunk,
+                        Bucket=bucket,
+                        Key=key,
+                        UploadId=upload_id,
+                        PartNumber=part_number
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    parts.append({"PartNumber": part_number,
+                                  "ETag": part['ETag'],
+                                  })
+                    part_number += 1
+                    return part_number
+
+
+            def empty_bucket(bucket):
+                try:
+                    s3Bucket = s3.Bucket(bucket)
+                    s3Bucket.object_versions.delete()
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info("Bucket Emptying Successful!")                        
+
+
+
+            def lambda_handler(event, context):
+                download_complete = event.get('download_result').get('Payload').get('download_complete')
+                s3Bucket = event.get('download_result').get('Payload').get('s3Bucket')
+                s3Key = event.get('download_result').get('Payload').get('s3Key')
+                upload_id = event.get('download_result').get('Payload').get('upload_id')
+                num_chunks = event.get('download_result').get('Payload').get('num_chunks')
+                download_function = event.get('download_result').get('Payload').get('download_function')
+                chunk_num = event.get('download_result').get('Payload').get('next_chunk')
+                next_chunk = event.get('download_result').get('Payload').get('next_chunk')
+                chunk_size = event.get('download_result').get('Payload').get('chunk_size')
+                part_num = event.get('download_result').get('Payload').get('part_num')
+                parts = event.get('download_result').get('Payload').get('parts')
+                my_multipart_threshold = event.get('download_result').get('Payload').get('my_multipart_threshold')
+                logger.info(f'Event detail is: {event}')
+                my_job_id = event.get('inv_job_id')
+
+                logger.info(f'JobID is: {my_job_id}')
+                my_inv_stream = retrieve_inv_to_s3(my_job_id, my_glacier_vault_name)
+
+                # If Inventory is available for download, then download and mark as succeeded.
+                if my_inv_stream:
+                    # First Cleanup the Solution S3 Bucket for all previous downloads
+                    empty_bucket(s3Bucket)
+                    if download_function == 'no_multipart':
+                        stream_to_s3(s3Bucket, s3Key, my_inv_stream)
+                        download_complete = True
+                    else:
+                        # Calculate the byte range for the current chunk
+                        start_byte = chunk_num * chunk_size
+                        logger.info(f'Start Byte is: {start_byte}')
+                        end_byte = min((chunk_num + 1) * chunk_size - 1, start_byte + chunk_size - 1)
+                        logger.info(f'End byte is: {end_byte}')
+                        range_header = f"bytes={start_byte}-{end_byte}"
+                        logger.info(f'Range is: {range_header}')
+                        # Download the Vault Inv chunk from S3 Glacier
+                        vault_inv_response = retrieve_ranged_inv_to_s3(my_job_id, my_glacier_vault_name, range_header)
+                        chunk_data = vault_inv_response.read()
+                        # Create a byte stream for the chunk data
+                        chunk_stream = io.BytesIO(chunk_data)
+                        try:
+                            part = s3Client.upload_part(
+                                Body=chunk_stream,
+                                Bucket=s3Bucket,
+                                Key=s3Key,
+                                UploadId=upload_id,
+                                PartNumber=part_num
+                            )
+                        except Exception as e:
+                            logger.error(e)
+                            download_complete = 'StopExecution'
+                        else:
+                            parts.append({"PartNumber": part_num,
+                                            "ETag": part['ETag'],
+                                                          })
+                            part_num += 1
+                            next_chunk = chunk_num + 1
+                        if next_chunk == num_chunks:
+                            # Complete the Parts
+                            try:
+                                result = s3Client.complete_multipart_upload(
+                                    Bucket=s3Bucket,
+                                    Key=s3Key,
+                                    UploadId=upload_id,
+                                    MultipartUpload={"Parts": parts},
+                                )
+                            except Exception as e:
+                                logger.error(e)
+                                download_complete = 'StopExecution'
+                            else:
+                                # Mark the download as Complete:
+                                download_complete = True
+
+
+                elif my_inv_stream == None:
+                    download_complete = 'StopExecution'
+                # Return required information to State Machines
+                return {
+                    'download_complete': download_complete,
+                    's3Bucket' : s3Bucket,
+                    's3Key' : s3Key,
+                    'num_chunks': num_chunks,
+                    'upload_id': upload_id,
+                    'chunk_size': chunk_size,
+                    'part_num': part_num,
+                    'parts': parts,
+                    'next_chunk': next_chunk,
+                    'download_function': download_function,
+                    'my_multipart_threshold': my_multipart_threshold,
+
+                }
+
+
+
+
+################################################ Code Ends ####################################################
+
+
+
+  StartStateFuncIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: S3PutObjectPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:ListMultipartUploadParts'
+                  - 's3:AbortMultipartUpload'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}/*
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+
+
+  StartStateFunc:
+    DependsOn:
+      - CheckVaultExists  
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt StartStateFuncIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          multipart_threshold: !FindInMap [ SDK, SDKParameters, multipartthreshold ]
+          download_chunk_size: !FindInMap
+              - SDK
+              - SDKParameters
+              - multipartchunksize
+          my_bucket: !Ref VaultInventoryBucket
+          s3BuckettoDownloadPrefix: !FindInMap
+              - Bucket
+              - Parameters
+              - invdownloadprefix
+          Larges3BuckettoDownloadPrefix: !FindInMap
+              - Bucket
+              - Parameters
+              - largeinvdownloadprefix
+      Code:
+        ZipFile: |
+            import math
+            import json
+            import os
+            import uuid
+            import boto3
+            from botocore.exceptions import ClientError
+            import logging
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Set Variables
+            my_region = str(os.environ['AWS_REGION'])
+            chunk_size = int(os.environ['download_chunk_size'])
+            s3Bucket = str(os.environ['my_bucket'])
+            inv_download_prefix = str(os.environ['s3BuckettoDownloadPrefix'])
+            large_inv_download_prefix = str(os.environ['Larges3BuckettoDownloadPrefix'])
+            my_multipart_threshold = int(os.environ['multipart_threshold'])
+
+            # Set Service Variables
+            s3 = boto3.client("s3", region_name=my_region)
+
+
+            ###### Multipart Upload Initiation Function ######
+
+            def create_multipart_upload_fn(bucket, key):
+                # Create Multipart Upload
+                try:
+                    mpu = s3.create_multipart_upload(
+                        Bucket=bucket,
+                        Key=key,
+                        ACL='bucket-owner-full-control'
+                    )
+
+                except Exception as e:
+                    logger.error(e)
+                    raise
+
+                else:
+                    uploadid = mpu['UploadId']
+                    return uploadid
+
+
+
+            def lambda_handler(event, context):
+                logger.info(f"Display Invocation Event Details: {event}")
+                """ Define Multipart Upload Parts"""
+                parts = []
+                # Define Some Parameters
+                download_function = None
+                s3Key = None
+                chunk_num = 0
+                part_num = 1
+                next_chunk = 0
+                upload_id = None
+                num_chunks = None
+                # Retrieve Vault Inventory Size
+                vault_inv_size = int(event.get('vault_inventory_size'))
+                logger.info(f"Display Vault Size: {vault_inv_size}")
+                #### Set Multipart Threshold ####
+                if vault_inv_size < my_multipart_threshold:
+                    logger.info(f'Vault Inventory Size is smaller than {my_multipart_threshold} switching to S3 Managed Download Function!')
+                    download_function = 'no_multipart'
+                    s3Key = inv_download_prefix + str(uuid.uuid4()) + '.csv'
+                else:
+                    logger.info(f'Vault Inventory Size is larger than {my_multipart_threshold} switching to S3 Multipart Download Function!')
+                    download_function = 'use_multipart'
+                    # Set S3 Key
+                    s3Key = large_inv_download_prefix + str(uuid.uuid4()) + '.csv'
+                    # Now we calculate the number of chunks
+                    num_chunks = int(math.ceil(float(vault_inv_size) / chunk_size))
+                    logger.info(f"Number of chunks is: {num_chunks}")
+                    upload_id = create_multipart_upload_fn(s3Bucket, s3Key)
+                    logger.info(f"UploadID is: {upload_id}")
+
+                # ReturnValues
+                return {
+                        'download_complete': False,
+                        'retry_num': 0,
+                        'download_function': download_function,
+                        'upload_id': upload_id,
+                        'num_chunks': num_chunks,
+                        's3Bucket': s3Bucket,
+                        's3Key': s3Key,
+                        'chunk_size': chunk_size,
+                        'part_num': part_num,
+                        'next_chunk': next_chunk,
+                        'parts': parts,
+                        'my_multipart_threshold': my_multipart_threshold,
+                        }
+
+
+
+
+
+################################################ Code Ends ####################################################
+
+
+
+  ChecknumrowsFunctionIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}/*
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}
+
+
+  ChecknumrowsFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt ChecknumrowsFunctionIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 180
+      MemorySize: 128
+      Environment:
+        Variables:
+          athena_query_max_retry: !FindInMap [ SDK, SDKParameters, athenaquerymaxattempt ]      
+      Code:
+        ZipFile: |
+            import math
+            import json
+            import os
+            import uuid
+            import boto3
+            from botocore.exceptions import ClientError
+            import logging
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+            query_max_retry = str(os.environ['athena_query_max_retry'])
+
+
+            # Set Service Variables
+            s3Client = boto3.client("s3", region_name=my_region)
+
+
+            # Specify S3 Select variables 
+            myexpression = "SELECT count(*) FROM s3object s"
+            my_csv_output_serialization = 'CSV'
+            my_fileheader_info = 'USE'
+
+
+            # S3 Select query to check the number of rows in the Athena CSV result.
+            def select_query_function_csv(bucket, key, expression, fileheaderinfo, outputserialization):
+                try:
+                    resp = s3Client.select_object_content(
+                        Bucket=bucket,
+                        Key=key,
+                        Expression=expression,
+                        ExpressionType='SQL',
+                        RequestProgress={
+                            'Enabled': True
+                        },
+                        InputSerialization={
+                            "CSV": {
+                                'FileHeaderInfo': fileheaderinfo,
+                            },
+                        },
+                        OutputSerialization={my_csv_output_serialization: {}}, )                    
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    for event in resp['Payload']:
+                        if 'Records' in event:
+                            num_of_rows = int(event['Records']['Payload'].decode('utf-8'))
+                            logger.info(f'There are {num_of_rows} of rows in the Athena query result')
+                            return num_of_rows
+
+
+
+            def lambda_handler(event, context):
+                # Set/Retriev Parameters and Variable
+                query_num_attempts = 0    
+                my_csv_num_rows = None
+                split_csv = 'UseSplit'
+                logger.info(f'Event detail is: {event}')
+                vault_inventory_size = event.get('vault_inventory_size')
+                my_multipart_threshold = event.get('download_result').get('Payload').get('my_multipart_threshold')
+                s3Bucket = event.get('download_result').get('Payload').get('s3Bucket')
+                s3Key = event.get('download_result').get('Payload').get('s3Key')
+
+                ###### Set When to Split CSV with Athena or Not #########
+                logger.info(f'vault_inventory_size value is : {vault_inventory_size}')
+                logger.info(f'my_multipart_threshold is : {my_multipart_threshold}')
+                if vault_inventory_size <= my_multipart_threshold:
+                    split_csv = 'NoSplit'
+                logger.info(f'split_csv value is : {split_csv}')
+
+                ##### Retrieve the Number of Rows in the Downloaded vault CSV Inventory ##########
+                try:
+                    my_csv_num_rows = int(select_query_function_csv(s3Bucket, s3Key, myexpression, my_fileheader_info, my_csv_output_serialization))
+                except Exception as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f'my_csv_num_rows is: {my_csv_num_rows}')
+
+
+                # ReturnValues
+                return {
+                        'my_csv_num_rows' : my_csv_num_rows,
+                        'csv_chunking_complete': False,
+                        'split_csv': split_csv,
+                        's3Bucket': s3Bucket,
+                        's3Key': s3Key,
+                        'query_max_retry' : query_max_retry,
+                        'query_num_attempts' : query_num_attempts
+                        }
+
+################################################ Code Ends ####################################################
+
+
+
+
+  AthenaSplitFunctionIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'athena:StartQueryExecution'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                  - 'athena:GetQueryResults'
+                  - 's3:ListMultipartUploadParts'
+                  - 'athena:GetWorkGroup'
+                  - 's3:AbortMultipartUpload'
+                  - 'athena:StopQueryExecution'
+                  - 'athena:GetQueryExecution'
+                  - 's3:GetBucketLocation'
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${VaultInventoryBucket}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${VaultInventoryBucket}/*'
+                  - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/myglacierinvathenawrkg-${StackNametoLower.change_to_lower}"
+              - Effect: Allow
+                Action:
+                  - 'glue:GetDatabase'
+                  - 'glue:GetDatabases'
+                  - 'glue:GetPartition'
+                  - 'glue:GetTables'
+                  - 'glue:GetPartitions'
+                  - 'glue:GetTable'
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/myglacierinvtable-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/myglacierinvtable-${StackNametoLower.change_to_lower}"                  
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/myglacierinvdb-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/myglacierinvdb-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/myglacierinvdb-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/myglacierinvtable-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/myglacierinvtable-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"    
+
+
+  AthenaSplitFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt AthenaSplitFunctionIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 360
+      MemorySize: 128
+      Environment:
+        Variables:
+          glue_db: !Sub 'myglacierinvdb-${StackNametoLower.change_to_lower}'
+          glue_tbl: !Sub 'myglacierinvtable-${StackNametoLower.change_to_lower}'
+          workgroup_name: !Sub 'myglacierinvathenawrkg-${StackNametoLower.change_to_lower}'
+          my_bucket: !Ref VaultInventoryBucket
+          Larges3BuckettoDownloadPrefix: !FindInMap
+              - Bucket
+              - Parameters
+              - athenaunloadpath          
+      Code:
+        ZipFile: |
+            import math
+            import json
+            import os
+            import uuid
+            import boto3
+            from botocore.exceptions import ClientError
+            import logging
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+            my_glue_db = str(os.environ['glue_db'])
+            my_glue_tbl = str(os.environ['glue_tbl'])
+            my_workgroup_name = str(os.environ['workgroup_name'])
+            s3Bucket = str(os.environ['my_bucket'])
+            my_unload_prefix = str(os.environ['Larges3BuckettoDownloadPrefix'])
+
+
+
+            # Set Service Client
+            athena_client = boto3.client('athena', region_name=my_region)
+            s3Client = boto3.client("s3", region_name=my_region)
+
+
+
+            ############# Athena Query Function #############
+            def start_query_execution(query_string, athena_db, workgroup_name):
+                logger.info(f'Starting Athena query...... with query string: {query_string}')
+                try:
+                    execute_query = athena_client.start_query_execution(
+                        QueryString=query_string,
+                        QueryExecutionContext={
+                            'Database': athena_db
+                        },
+                        WorkGroup=workgroup_name,
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(f'Query Successful: {execute_query}')
+                    return execute_query.get('QueryExecutionId')
+
+
+            def lambda_handler(event, context):
+                logger.info(f'Initiating Main Function...')
+                logger.info(f'Event detail is: {event}')
+                # Retrieve Event Parameters
+                query_max_retry = event.get('download_result').get('Payload').get('query_max_retry')
+                query_num_attempts = event.get('download_result').get('Payload').get('query_num_attempts')    
+                my_csv_num_rows = event.get('download_result').get('Payload').get('my_csv_num_rows')
+                csv_chunking_complete = event.get('download_result').get('Payload').get('csv_chunking_complete')
+                split_csv = event.get('download_result').get('Payload').get('split_csv')
+                s3_bucket = s3Bucket
+                # Set an Unload path ensure it does not exist, Athena Unload does not write to an existing path
+                unload_full_path = f's3://{s3_bucket}/{my_unload_prefix}'
+
+                # Define Athena Query
+                my_query_string = f"""
+                UNLOAD (SELECT * FROM "{my_glue_db}"."{my_glue_tbl}" )
+                TO '{unload_full_path}'
+                WITH (format = 'TEXTFILE', field_delimiter = ',' , compression = 'none')
+                """
+
+                logger.info(my_query_string)
+                try:
+                    my_query_exec_id = start_query_execution(my_query_string, my_glue_db, my_workgroup_name)
+                except Exception as e:
+                    logger.error(e)
+                    raise                    
+                else:
+                    query_num_attempts += 1
+                return {
+                        'csv_chunking_complete': csv_chunking_complete,
+                        'my_csv_num_rows' : my_csv_num_rows,
+                        'split_csv': split_csv,
+                        'my_query_exec_id' : my_query_exec_id,
+                        'query_max_retry' : query_max_retry,
+                        'query_num_attempts' : query_num_attempts
+                        }
+
+################################################ Code Ends ####################################################
+
+
+
+  CheckAthenaQueryStatusFunctionIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'athena:StartQueryExecution'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                  - 'athena:GetQueryResults'
+                  - 's3:ListMultipartUploadParts'
+                  - 'athena:GetWorkGroup'
+                  - 's3:AbortMultipartUpload'
+                  - 'athena:StopQueryExecution'
+                  - 'athena:GetQueryExecution'
+                  - 's3:GetBucketLocation'
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${VaultInventoryBucket}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${VaultInventoryBucket}/*'
+                  - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/myglacierinvathenawrkg-${StackNametoLower.change_to_lower}"
+              - Effect: Allow
+                Action:
+                  - 'glue:GetDatabase'
+                  - 'glue:GetDatabases'
+                  - 'glue:GetPartition'
+                  - 'glue:GetTables'
+                  - 'glue:GetPartitions'
+                  - 'glue:GetTable'
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/myglacierinvtable-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/myglacierinvtable-${StackNametoLower.change_to_lower}"                  
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/myglacierinvdb-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/myglacierinvdb-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/myglacierinvdb-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/myglacierinvtable-${StackNametoLower.change_to_lower}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/myglacierinvtable-${StackNametoLower.change_to_lower}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"    
+
+
+  CheckAthenaQueryStatusFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt CheckAthenaQueryStatusFunctionIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 360
+      MemorySize: 128       
+      Code:
+        ZipFile: |
+            import math
+            import json
+            import os
+            import uuid
+            import boto3
+            from botocore.exceptions import ClientError
+            import logging
+            import time
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+
+
+            # Set Service Client
+            athena_client = boto3.client('athena', region_name=my_region)
+                    
+                    
+            def get_query_exec(query_execution_id):
+                logger.info(f'Getting Athena Execution Results')
+                try:
+                    get_query_execution = athena_client.get_query_execution(
+                        QueryExecutionId=query_execution_id,
+                    )
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                else:
+                    logger.info(get_query_execution)
+                    print(get_query_execution.get('QueryExecution').get('Status').get('State'))
+                    return get_query_execution.get('QueryExecution').get('Status').get('State')        
+                    
+
+
+
+            def lambda_handler(event, context):
+                logger.info(f'Initiating Main Function...')
+                logger.info(f'Event detail is: {event}')
+                
+                # Get Parameters from the Event:
+                my_csv_num_rows = event.get('download_result').get('Payload').get('my_csv_num_rows')
+                csv_chunking_complete = event.get('download_result').get('Payload').get('csv_chunking_complete')
+                split_csv = event.get('download_result').get('Payload').get('split_csv')
+                my_query_exec_id = event.get('download_result').get('Payload').get('my_query_exec_id')
+                query_max_retry = int(event.get('download_result').get('Payload').get('query_max_retry'))
+                query_num_attempts = int(event.get('download_result').get('Payload').get('query_num_attempts'))
+
+
+                # logger.info(my_query_string)
+                try:
+                    my_query_status = get_query_exec(my_query_exec_id)
+                except Exception as e:
+                    logger.error(e)
+                    raise                    
+                else:
+                    if my_query_status == "SUCCEEDED":
+                        csv_chunking_complete = True
+                    elif my_query_status == "FAILED":
+                        csv_chunking_complete = csv_chunking_complete
+                    elif my_query_status == "RUNNING" or my_query_status == "QUEUED":
+                        time.sleep(300)
+                return {
+                        'csv_chunking_complete': csv_chunking_complete,
+                        'my_csv_num_rows' : my_csv_num_rows,
+                        'split_csv': split_csv,
+                        'my_query_exec_id' : my_query_exec_id,
+                        'query_max_retry' : query_max_retry,
+                        'query_num_attempts' : query_num_attempts
+                        }
+
+
+
+############################################### Code Ends  #####################################################
+
+
+  ListPrefixFunctionIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow        
+        - PolicyName: Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetBucketLocation'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${VaultInventoryBucket}
+
+
+  ListPrefixFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt ListPrefixFunctionIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 900
+      MemorySize: 256
+      Code:
+        ZipFile: |
+            import math
+            import json
+            import os
+            import uuid
+            import boto3
+            from botocore.exceptions import ClientError
+            import logging
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+            # Define Environmental Variables
+            my_region = str(os.environ['AWS_REGION'])
+
+
+            # Set Service Client
+            s3 = boto3.resource('s3', region_name=my_region)
+
+
+            def lambda_handler(event, context):
+                logger.info(f'Event detail is: {event}')
+                csv_files = []
+                item_count = 0
+                num_count = 0
+                item_loop_status = 'NotStarted'
+                bucketname = event.get('bucketname')
+                prefix = event.get('prefix')
+                mybucket = s3.Bucket(bucketname)
+
+                #### Initiate List Objects ####
+                try:
+                    all_objs = mybucket.objects.filter(Prefix=prefix)
+                    obj_keys = [obj.key for obj in all_objs]
+                except ClientError as e:
+                    logger.error(e)
+                    raise
+                else:
+                    csv_files = obj_keys
+                    item_count = len(csv_files)
+                    logger.info(f'item_count is: {item_count}')
+                #### Start variables ###
+                # TODO implement
+                return {
+                    'item_count': item_count,
+                    'item_loop_status': item_loop_status,
+                    'csv_files': csv_files,
+                    'num_count': num_count,
+                    'bucketname': bucketname,
+                }
+
+################################################ Code Ends ####################################################
+
+
+  filterListFunctionIAMRole:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWSLambdaBasicExecutionRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'                  
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                Effect: Allow           
+
+
+  filterListFunction:
+    DependsOn:
+      - CheckVaultExists    
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Architectures:
+        - arm64       
+      Handler: index.lambda_handler
+      Role: !GetAtt filterListFunctionIAMRole.Arn
+      Runtime: python3.12
+      Timeout: 180
+      MemorySize: 128
+      Code:
+        ZipFile: |
+            import json
+            import logging
+
+
+            # Set up logging
+            logger = logging.getLogger(__name__)
+            logger.setLevel('INFO')
+
+
+
+            def lambda_handler(event, context):
+                logger.info(f'Event details: {event}')
+                item_count = int(event.get('item_count'))
+                item_loop_status = 'Started'
+                csv_files = event.get('csv_files')
+                num_count = int(event.get('num_count'))
+                bucketname = event.get('bucketname')
+                logger.info(f"Item count is: {item_count}")
+                logger.info(f"num_count is: {num_count}")
+                keyname = csv_files[num_count]
+                logger.info(f'keyname is: {keyname}')
+                if num_count == item_count - 1:
+                    item_loop_status = 'complete'
+
+                num_count += 1
+
+                # TODO implement
+                return {
+                    'item_count': item_count,
+                    'item_loop_status': item_loop_status,
+                    'csv_files': csv_files,
+                    'num_count': num_count,
+                    'bucketname': bucketname,
+                    'keyname': keyname
+                }
+
+
+################################################ Code Ends ####################################################
