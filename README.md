@@ -101,7 +101,7 @@ Listed below are the Cloudformation Stack parameters included in the template.
 |  I intend to delete all data in my Glacier Vault  | Drop down confirmation of your intent to empty your S3  Glacier Vault |
 |  Permanently delete all data in my Glacier Vault?  | You will need to type the ***Permanently Delete***  displayed in the parameter field for the second confirmation |            
 |  The speed at which the solution deletes the Archives in  your S3 Glacier Vault  | Do you have other Vaults that you will need to access  during this deletion? This script is set to run as fast as possible to delete your Vault  Archives. If you actively use Vaults for other purposes, consider reducing  this number. \[See Troubleshooting and Guidance Section below\] |                                
-|  Email Address to Receive Deletion Progress Notifications  | Your own valid email address to receive deletion progress from the solution |
+|  Email Address to Receive Deletion Progress Notifications  | Your own valid email address to receive job status from the solution |
  
 _Steps to deploy:_
  
