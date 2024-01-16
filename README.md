@@ -5,7 +5,7 @@
 ## Description
 
 
-[Amazon S3 Glacier](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html) Archive (data) Delete solution provides an automated workflow to delete ALL of your data in an S3 Glacier Vault.
+[Amazon S3 Glacier](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html) Archive (data) Delete solution provides an automated workflow to delete ALL of your data in an [S3 Glacier Vault](https://docs.aws.amazon.com/amazonglacier/latest/dev/working-with-vaults.html).
 
  This solution only applies to Amazon S3 Glacier Vault Archives. Within S3 Glacier, data is stored as an Archive within a Vault. This solution does not apply to objects in [Glacier Deep Archive, Glacier Flexible Retrieval, and Glacier Instant Retrieval](https://aws.amazon.com/s3/storage-classes/glacier/) stored in [an Amazon S3 Bucket](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingBucket.html). More information on Amazon S3 Glacier can be found in [our documentation](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html). 
  
