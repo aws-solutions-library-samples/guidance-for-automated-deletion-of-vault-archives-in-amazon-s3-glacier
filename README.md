@@ -163,6 +163,7 @@ Please ensure the archives in your Vault are eligible for deletion, and there ar
 
  
 There are costs associated with using this solution. The solution consists of several components/services deployed to manage the archive deletion process. Please note that there will some additional charges for using the services including **Step function**, **Athena, SNS, S3** requests and Lambda function invocation costs.
+
 _Example solution cost for emptying a Glacier Vault containing 9,980 archives_
 
 ![](media/Picture3.png)
