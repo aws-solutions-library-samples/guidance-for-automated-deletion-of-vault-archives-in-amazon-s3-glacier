@@ -157,7 +157,7 @@ Please ensure the archives in your Vault are eligible for deletion, and there ar
 ## Limitations
 
  
-* The "Vault Inventory Splitting Component" relies on Amazon Athena SQL [UNLOAD](https://docs.aws.amazon.com/athena/latest/ug/unload.html) to perform the chunking, if your S3 Glacier Vault contains hundreds of millions of archives or more, and are experiencing issues with deleting archives the solution, please contact [AWS Support](https://aws.amazon.com/contact-us/) for assistance.
+* The "Vault Inventory Splitting Component" relies on Amazon Athena SQL [UNLOAD](https://docs.aws.amazon.com/athena/latest/ug/unload.html) to perform the chunking, if your S3 Glacier Vault contains hundreds of millions of archives or more, and are experiencing issues with deleting archives using the solution, please contact [AWS Support](https://aws.amazon.com/contact-us/) for assistance.
 
 ## Costs
 
