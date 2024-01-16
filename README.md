@@ -136,7 +136,7 @@ Alternatively, you can track the progress of the workflow in real-time by lookin
 ![](media/Picture2.png)
  
 
-* **Pending** section, those being deleted will show under the **Running** column, successfully deleted ones will show under the **Succeeded** column, rows that fail to delete will show under the **Failed** column. 
+* Number of rows in the inventory pending delete will show under the **Pending** section, those being deleted will show under the **Running** column, successfully deleted ones will show under the **Succeeded** column, rows that fail to delete will show under the **Failed** column. 
 
  
  
