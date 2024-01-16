@@ -4,7 +4,7 @@
 
 ## Description
 
-**_ **** _**
+
 [Amazon S3 Glacier](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html) Archive (data) Delete solution provides an automated workflow to delete ALL of your data in an S3 Glacier Vault.
 
  This solution only applies to Amazon S3 Glacier Vault Archives. Within S3 Glacier, data is stored as an Archive within a Vault. This solution does not apply to objects in [Glacier Deep Archive, Glacier Flexible Retrieval, and Glacier Instant Retrieval](https://aws.amazon.com/s3/storage-classes/glacier/) stored in [an Amazon S3 Bucket](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingBucket.html). More information on Amazon S3 Glacier can be found in [our documentation](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html). 
@@ -12,7 +12,7 @@
 
 ## Customer Value
 
-**_ **** _**
+
 The solution automates and orchestrates the complex and repetitive tasks associated with deleting data in an S3 Glacier Vault by emptying it of its Archives. Once the Vault is empty, you can then delete the Vault through a separate process.
  
 
@@ -21,16 +21,16 @@ The solution automates and orchestrates the complex and repetitive tasks associa
  
 **_Components and Flow:_**
  
-![](media/Slide1.png){width="6.5in" height="2.129861111111111in"}
+![](media/Slide1.png)
 
 
 _**Step function graph:**_
  
-![](media/Slide2.png){width="6.5in" height="2.129861111111111in"}
+![](media/Slide2.png)
 
- __ 
-_AWS Services used:_
- __ 
+ 
+**_AWS Services used:_**
+
 [AWS CloudFormation](https://aws.amazon.com/cloudformation/)
 [Amazon Simple Storage Service (S3)](https://aws.amazon.com/s3/)
 [Amazon S3 Glacier](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html)
@@ -40,7 +40,6 @@ _AWS Services used:_
 [Amazon Athena](https://aws.amazon.com/athena/)
 [Amazon Simple Notification Service (SNS)](https://aws.amazon.com/sns/)
 [AWS Identity and Access Management (IAM)](https://aws.amazon.com/iam/)
- __ 
  
 
 ### Disclaimer
@@ -123,7 +122,7 @@ _Steps to deploy:_
  
 _Cloudformation Console Screenshots:_
  
-[Image: image.png]
+![](media/Picture1.png)
  
 
 #### Tracking the deletion progress
@@ -139,7 +138,7 @@ Alternatively, you can track the progress of the workflow in real-time by lookin
 * At the **Executions** section, choose the displayed execution name, this will take you to the execution details page. 
 * Scroll down to the **Events** section and choose the **Map Run** link to see the items progress. 
 
-[Image: image.png]
+![](media/Picture2.png)
  
 
 * **Pending** section, those being deleted will show under the **Running** column, successfully deleted ones will show under the **Succeeded** column, rows that fail to delete will show under the **Failed** column. 
@@ -172,11 +171,11 @@ Please ensure the archives in your Vault are eligible for deletion, and there ar
 There are costs associated with using this solution. The solution consists of several components/services deployed to manage the archive deletion process. Please note that there will some additional charges for using the services including **Step function**, **Athena, SNS, S3** requests and Lambda function invocation costs.
 _Example solution cost for emptying a Glacier Vault containing 9,980 archives_
 
-[Image: image.png]
+![](media/Picture3.png)
 
 _Example solution cost for emptying a Glacier Vault containing 12,294.399 archives_
  
-[Image: image.png]
+![](media/Picture4.png)
 
 ## Cleaning up
 
