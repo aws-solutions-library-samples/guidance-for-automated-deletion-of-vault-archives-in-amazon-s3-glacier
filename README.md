@@ -172,6 +172,9 @@ _Example solution cost for emptying a Glacier Vault containing 12,294.399 archiv
  
 ![](media/Picture4.png)
 
+
+[AWS CloudTrail](https://docs.aws.amazon.com/cloudtrail/)  helps you enable operational and risk auditing, governance, and compliance of your AWS account. Actions taken by a user, role, or an AWS service are recorded as events in CloudTrail. If you have an [additional Trail](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-trail-manage-costs.html#cloudtrail-trail-manage-costs-trailconfig) enabled, AWS CloudTrail charges apply. See [AWS CloudTrail](https://aws.amazon.com/cloudtrail/pricing/) pricing for more information.
+
 ## Cleaning up
 
  
