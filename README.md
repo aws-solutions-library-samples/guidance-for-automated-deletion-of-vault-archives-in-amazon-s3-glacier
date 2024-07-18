@@ -1,8 +1,20 @@
-# Glacier Archive (Data) Delete
+# Guidance for Automated Amazon S3 Glacier Archive Bulk Data Delete on AWS
 
-##  
+## Table of Content
 
-## Description
+
+1. [Overview](#overview)
+2. [Cost](#costs)
+3. [Prerequisites](#prerequisites)
+4. [Deployment Steps](#deployment-steps)
+5. [Deployment Validation](#deployment-validation)
+6. [Cleanup](#cleanup)
+7. [Troubleshooting, Guidance, limitations and additional resources](#troubleshooting-and-guidance-limitations-and-additional-resources)
+8. [Security](#security)
+9. [License](#license)
+
+
+## Overview
 
 
 [Amazon S3 Glacier](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html) Archive (data) Delete solution provides an automated workflow to delete ALL of your data in an [S3 Glacier Vault](https://docs.aws.amazon.com/amazonglacier/latest/dev/working-with-vaults.html).
@@ -10,15 +22,12 @@
  This solution only applies to Amazon S3 Glacier Vault Archives. Within S3 Glacier, data is stored as an Archive within a Vault. This solution does not apply to objects in [Glacier Deep Archive, Glacier Flexible Retrieval, and Glacier Instant Retrieval](https://aws.amazon.com/s3/storage-classes/glacier/) stored in [an Amazon S3 Bucket](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingBucket.html). More information on Amazon S3 Glacier can be found in [our documentation](https://docs.aws.amazon.com/amazonglacier/latest/dev/introduction.html). 
  
 
-## Customer Value
+**_Customer Value_**
 
 
 The solution automates and orchestrates the complex and repetitive tasks associated with deleting data in an S3 Glacier Vault by emptying it of its Archives. Once the Vault is empty, you can then delete the Vault through a separate process.
  
 
-## Architecture and Components
-
- 
 **_Components and Flow:_**
  
 ![](media/Slide1.png)
@@ -28,7 +37,35 @@ _**Step function graph:**_
  
 ![](media/Slide2.png)
 
+
+## Costs
+
  
+There are costs associated with using this solution. The solution consists of several components/services deployed to manage the archive deletion process. Please note that there will some additional charges for using the services including **Step function**, **Athena, SNS, S3** requests and Lambda function invocation costs.
+
+
+### Sample Cost Tables
+
+_Example solution cost for emptying a Glacier Vault containing 9,980 archives_
+
+![](media/Picture3.png)
+
+_Example solution cost for emptying a Glacier Vault containing 12,294.399 archives_
+ 
+![](media/Picture4.png)
+
+#### AWS CloudTrail Cost
+
+[AWS CloudTrail](https://docs.aws.amazon.com/cloudtrail/)  helps you enable operational and risk auditing, governance, and compliance of your AWS account. Actions taken by a user, role, or an AWS service are recorded as events in CloudTrail. If you have an [additional Trail](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-trail-manage-costs.html#cloudtrail-trail-manage-costs-trailconfig) enabled, AWS CloudTrail charges apply. See [AWS CloudTrail](https://aws.amazon.com/cloudtrail/pricing/) pricing for more information.
+
+
+### Prerequisites
+
+The instructions in this post assume that you have required AWS Account [IAM permissions](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html) in addition to basic knowledge of [AWS Cloudformation](https://aws.amazon.com/cloudformation/). You also need to have the following resources:
+ 
+
+* An existing Amazon S3 Glacier Vault containing the Archives you want to delete.
+
 **AWS Services used:**
 
 [AWS CloudFormation](https://aws.amazon.com/cloudformation/)
@@ -48,11 +85,11 @@ _**Step function graph:**_
 [Amazon Simple Notification Service (SNS)](https://aws.amazon.com/sns/)
 
 [AWS Identity and Access Management (IAM)](https://aws.amazon.com/iam/)
- 
+
+
 
 ### Disclaimer
 
- 
 Please use this solution with caution. The solution will delete all of your data in the S3 Glacier Vault you specify. Do not deploy this solution unless you have confirmed that you want to permanently delete your data. Once you start this solution, your data is irrecoverable. 
  
 The solution template includes two opportunities to confirm that you are aware that your data and Archive will be deleted and irrecoverable. Providing these confirmations during the solution deployment is a confirmation that you accept that your S3 Glacier Vault archive data will be permanently deleted.
@@ -60,18 +97,9 @@ The solution template includes two opportunities to confirm that you are aware t
 If you have enabled [S3 Glacier vault lock](https://docs.aws.amazon.com/amazonglacier/latest/dev/vault-lock-policy.html) on your Vault, only objects eligible for deletion can be permanently deleted.
  
 The software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages or other liability, whether in an action of contract, tort or otherwise, arising from, out of or in connection with the software or the use or other dealings in the software.
- 
- 
-
-### Prerequisites
-
-The instructions in this post assume that you have required AWS Account [IAM permissions](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html) in addition to basic knowledge of [AWS Cloudformation](https://aws.amazon.com/cloudformation/). You also need to have the following resources:
- 
-
-* An existing Amazon S3 Glacier Vault containing the Archives you want to delete.
 
 
-### Summary of the steps
+### Deployment Steps
 
 * [Deploy](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/GettingStarted.Walkthrough.html) the AWS CloudFormation template 
 
@@ -84,9 +112,6 @@ The instructions in this post assume that you have required AWS Account [IAM per
 
 * Finally, you can then proceed to delete the S3 Glacier Vault.
 
-
-
-### Deployment
 
 ** **** **
 Listed below are the Cloudformation Stack parameters included in the template.
@@ -119,6 +144,10 @@ _Cloudformation Console Screenshots:_
  
 ![](media/Picture1.png)
  
+## Deployment Validation
+
+Please wait for the Stack to deploy and confirm the status has changed to "CREATE_COMPLETE".
+
 
 #### Tracking the deletion progress
 
@@ -138,10 +167,17 @@ Alternatively, you can track the progress of the workflow in real-time by lookin
 
 * Number of rows in the inventory pending delete will show under the **Pending** section, those being deleted will show under the **Running** column, successfully deleted ones will show under the **Succeeded** column, rows that fail to delete will show under the **Failed** column. 
 
- 
- 
 
-## Troubleshooting and Guidance
+## Cleanup
+
+ 
+To avoid incurring ongoing additional costs, please clean up the resources deployed as part of this solution. Not terminating the resource will incur ongoing charges, to remove the resources, go to the [Cloudformation console](https://console.aws.amazon.com/cloudformation/), select the solution **Stack** and then choose **Delete**. 
+
+
+## Troubleshooting and guidance, limitations and additional resources
+
+
+**Troubleshooting and Guidance**
 
  
 The solution is dependent on the availability and performance of multiple underlying AWS services including S3, Step function, Glue, Athena, SNS, Lambda and IAM services. 
@@ -151,38 +187,13 @@ The template contains some predefined values that apply to the deletion speed, m
 Please ensure the archives in your Vault are eligible for deletion, and there are no IAM/Resource policies denying archive deletion.
  
  
- 
- 
-
-## Limitations
+**Limitations**
 
  
 * The "Vault Inventory Splitting Component" relies on Amazon Athena SQL [UNLOAD](https://docs.aws.amazon.com/athena/latest/ug/unload.html) to perform the chunking, if your S3 Glacier Vault contains hundreds of millions of archives or more, and are experiencing issues with deleting archives using the solution, please contact [AWS Support](https://aws.amazon.com/contact-us/) for assistance.
 
-## Costs
 
- 
-There are costs associated with using this solution. The solution consists of several components/services deployed to manage the archive deletion process. Please note that there will some additional charges for using the services including **Step function**, **Athena, SNS, S3** requests and Lambda function invocation costs.
-
-_Example solution cost for emptying a Glacier Vault containing 9,980 archives_
-
-![](media/Picture3.png)
-
-_Example solution cost for emptying a Glacier Vault containing 12,294.399 archives_
- 
-![](media/Picture4.png)
-
-#### AWS CloudTrail Cost
-
-[AWS CloudTrail](https://docs.aws.amazon.com/cloudtrail/)  helps you enable operational and risk auditing, governance, and compliance of your AWS account. Actions taken by a user, role, or an AWS service are recorded as events in CloudTrail. If you have an [additional Trail](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-trail-manage-costs.html#cloudtrail-trail-manage-costs-trailconfig) enabled, AWS CloudTrail charges apply. See [AWS CloudTrail](https://aws.amazon.com/cloudtrail/pricing/) pricing for more information.
-
-## Cleaning up
-
- 
-To avoid incurring ongoing additional costs, please clean up the resources deployed as part of this solution. Not terminating the resource will incur ongoing charges, to remove the resources, go to the [Cloudformation console](https://console.aws.amazon.com/cloudformation/), select the solution **Stack** and then choose **Delete**. 
- 
-
-### Additional resources
+**Additional resources**
 
 * [AWS CloudFormation product page](https://aws.amazon.com/cloudformation/)
 * [S3 Batch Operations documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/batch-ops.html)
