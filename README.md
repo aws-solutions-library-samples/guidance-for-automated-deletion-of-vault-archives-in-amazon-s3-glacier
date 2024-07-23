@@ -50,7 +50,7 @@ _Example solution cost for emptying a Glacier Vault containing 9,980 archives_
 
 ![](media/Picture3.png)
 
-_Example solution cost for emptying a Glacier Vault containing 12,294.399 archives_
+_Example solution cost for emptying a Glacier Vault containing 12,294,399 archives_
  
 ![](media/Picture4.png)
 
