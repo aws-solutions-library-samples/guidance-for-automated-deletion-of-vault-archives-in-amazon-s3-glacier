@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >-
-  Solution that empties an S3 Glacier Vault, by permanently deleting all it's Archives. Please ensure you deploy this ONLY if you need to Empty the Glacier Vault.
+  Solution that empties an S3 Glacier Vault (SO9478), by permanently deleting all it's Archives. Please ensure you deploy this ONLY if you need to Empty the Glacier Vault.
   Deploying this solution is your acknoledgement that all archives in your Glacier Vault will be Permanently Deleted! (uksb-1tthgi817)
 Metadata:
   License:
