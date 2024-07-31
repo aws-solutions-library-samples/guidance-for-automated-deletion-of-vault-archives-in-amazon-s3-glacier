@@ -30,12 +30,12 @@ The solution automates and orchestrates the complex and repetitive tasks associa
 
 **_Components and Flow:_**
  
-![](media/Slide1.png)
+![](media/automated-deletion-of-vault-archives-in-amazon-s3-glacier.PNG)
 
 
 _**Step function graph:**_
  
-![](media/Slide2.png)
+![](media/step-function.png)
 
 
 ## Costs
