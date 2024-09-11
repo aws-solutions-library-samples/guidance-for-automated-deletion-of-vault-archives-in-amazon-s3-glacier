@@ -3,6 +3,9 @@ Description: >-
   Solution that empties an S3 Glacier Vault (SO9478), by permanently deleting all it's Archives. Please ensure you deploy this ONLY if you need to Empty the Glacier Vault.
   Deploying this solution is your acknoledgement that all archives in your Glacier Vault will be Permanently Deleted! (uksb-1tthgi817)
 Metadata:
+
+  Version: '1.0.1'
+
   License:
     Description: >-
       'MIT No Attribution
@@ -2361,44 +2364,33 @@ Resources:
             s3Client = boto3.client("s3", region_name=my_region)
 
 
-            # Specify S3 Select variables 
-            myexpression = "SELECT count(*) FROM s3object s"
-            my_csv_output_serialization = 'CSV'
-            my_fileheader_info = 'USE'
+            # Function check the number of rows in the Athena CSV result.
 
-
-            # S3 Select query to check the number of rows in the Athena CSV result.
-            def select_query_function_csv(bucket, key, expression, fileheaderinfo, outputserialization):
+            def select_query_function_csv(bucket, key):
+                # Specify static byte range
+                bytes_range = f'bytes=0-10240'
                 try:
-                    resp = s3Client.select_object_content(
-                        Bucket=bucket,
-                        Key=key,
-                        Expression=expression,
-                        ExpressionType='SQL',
-                        RequestProgress={
-                            'Enabled': True
-                        },
-                        InputSerialization={
-                            "CSV": {
-                                'FileHeaderInfo': fileheaderinfo,
-                            },
-                        },
-                        OutputSerialization={my_csv_output_serialization: {}}, )                    
+                    # Read the object from S3, specify the range.
+                    response = s3Client.get_object(Bucket=bucket, Key=key, Range=bytes_range)
+                except ClientError as e:
+                    logger.error(f"Unable to complete requested operation, see Clienterror details below:")
+                    print(f"Unable to complete requested operation, see Clienterror details below:")
                 except Exception as e:
+                    logger.error(f"Unable to complete requested operation, see Additional Client/Service error details below:")
                     logger.error(e)
-                    raise
                 else:
-                    for event in resp['Payload']:
-                        if 'Records' in event:
-                            num_of_rows = int(event['Records']['Payload'].decode('utf-8'))
-                            logger.info(f'There are {num_of_rows} of rows in the Athena query result')
-                            return num_of_rows
-
+                    # Confirm reading from Amazon S3 was successful and determine the number of rows
+                    logger.info("Successfully completed the reading process!")
+                    csv_read = response.get('Body').readlines()
+                    num_of_rows = int(len(csv_read))
+                    logger.info(f'There are {num_of_rows} of rows in the Athena query result')
+                    # Remove CSV header included by Athena
+                    return num_of_rows - 1
 
 
             def lambda_handler(event, context):
                 # Set/Retriev Parameters and Variable
-                query_num_attempts = 0    
+                query_num_attempts = 0
                 my_csv_num_rows = None
                 split_csv = 'UseSplit'
                 logger.info(f'Event detail is: {event}')
@@ -2416,14 +2408,12 @@ Resources:
 
                 ##### Retrieve the Number of Rows in the Downloaded vault CSV Inventory ##########
                 try:
-                    my_csv_num_rows = int(select_query_function_csv(s3Bucket, s3Key, myexpression, my_fileheader_info, my_csv_output_serialization))
+                    my_csv_num_rows = select_query_function_csv(s3Bucket, s3Key)
                 except Exception as e:
                     logger.error(e)
                     raise
                 else:
                     logger.info(f'my_csv_num_rows is: {my_csv_num_rows}')
-
-
                 # ReturnValues
                 return {
                         'my_csv_num_rows' : my_csv_num_rows,
@@ -2434,6 +2424,7 @@ Resources:
                         'query_max_retry' : query_max_retry,
                         'query_num_attempts' : query_num_attempts
                         }
+
 
 ################################################ Code Ends ####################################################
 
